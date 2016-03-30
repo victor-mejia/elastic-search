@@ -1,34 +1,59 @@
 package org.vams.rxjava.app;
 
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.LineIterator;
+import com.google.gson.Gson;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.ClientProtocolException;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
 import rx.Observable;
-import rx.observables.StringObservable;
+import sun.net.www.http.HttpClient;
 
 import java.io.*;
-import java.util.List;
-import java.util.Spliterator;
-import java.util.Spliterators;
+import java.util.*;
 
 /**
  * Created by vamsp7 on 27/03/16.
  */
 public class Application {
 
-    public static final String FILE_PATH = "/home/vamsp7/Downloads/popcorn-android/Inventory Sample Data/NewCarInventory_infiniti_US_en_20160308T074521.txt";
+    public static final Gson gson = new Gson();
+    public static final String bulkIndexURL = "http://192.168.99.100:9200/twitter/tweet/_bulk";
+
+    public static final String FILE_PATH = "/Users/vicmejia/Documents/Grooming/Nissan Inventory/Inventory Sample Data/NewCarInventory_nissan_US_es_20160308T074521.txt";
 
     public static void main(String[] args) throws FileNotFoundException {
-        Observable<String> tweets = Observable.just("learning RxJava", "Writing blog about RxJava", "RxJava rocks!!");
-        tweets.subscribe(Application::processMessage,(e) -> e.printStackTrace(), Application::processComplete);
+
+        Calendar startTime = Calendar.getInstance();
 
         Observable<String> fileReadObservable2 = Application.getFileLineObservable(FILE_PATH);
         fileReadObservable2
                 .filter(Application::validLine)
                 .map(Application::toEntity)
-                .buffer(100)
-                .map(List::size)
+                .buffer(500)
+                .map(Application::toBulkRequest)
+                .map(Application::storeData)
+                .count()
                 .subscribe(Application::processMessage,e -> System.out.println(e.getMessage()), Application::processComplete);
 
+        System.out.println("Total time (ms): " + (Calendar.getInstance().getTimeInMillis()-startTime.getTimeInMillis()));
+
+    }
+
+    private static String storeData(String request) {
+        CloseableHttpClient client = HttpClientBuilder.create().build();
+        HttpPost post = new HttpPost(bulkIndexURL);
+        String statusResponse =  500+"";
+        try {
+            post.setEntity(new StringEntity(request));
+            HttpResponse response = client.execute(post);
+            statusResponse = response.getStatusLine().getStatusCode()+"";
+        }
+        catch ( IOException e) {
+            e.printStackTrace();
+        }
+        return statusResponse;
     }
 
     public static boolean validLine(String line){
@@ -36,7 +61,20 @@ public class Application {
     }
 
     public static Object toEntity(String line){
-        return line.replace("|","\t ");
+        Map<String, Object> entity = new HashMap<>();
+        entity.put("code", UUID.randomUUID().toString());
+        entity.put("description", line.replace("|"," "));
+        return entity;
+    }
+
+    public static String toBulkRequest(List<Object> entities){
+        StringBuilder bulkRequest = new StringBuilder();
+        for (Object entity:entities) {
+            bulkRequest.append("{ \"create\" : {\"_id\" : \""+((Map)entity).get("code")+"\" } }\n");
+            bulkRequest.append(toJSON(entity)+"\n");
+        }
+
+        return bulkRequest.toString();
     }
 
     public static Object validateEntity(Object entity) {
@@ -68,5 +106,9 @@ public class Application {
         });
 
 
+    }
+
+    public static String toJSON(Object entity){
+        return gson.toJson(entity);
     }
 }
