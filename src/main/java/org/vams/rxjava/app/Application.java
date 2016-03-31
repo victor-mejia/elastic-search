@@ -20,20 +20,22 @@ public class Application {
 
     public static final Gson gson = new Gson();
     public static final String bulkIndexURL = "http://192.168.99.100:9200/twitter/tweet/_bulk";
-
     public static final String FILE_PATH = "/Users/vicmejia/Documents/Grooming/Nissan Inventory/Inventory Sample Data/NewCarInventory_nissan_US_es_20160308T074521.txt";
 
     public static void main(String[] args) throws FileNotFoundException {
 
         Calendar startTime = Calendar.getInstance();
 
+
         Observable<String> fileReadObservable2 = Application.getFileLineObservable(FILE_PATH);
         fileReadObservable2
                 .filter(Application::validLine)
                 .map(Application::toEntity)
+                .map(Application::validateEntity)
                 .buffer(500)
                 .map(Application::toBulkRequest)
                 .map(Application::storeData)
+
                 .count()
                 .subscribe(Application::processMessage,e -> System.out.println(e.getMessage()), Application::processComplete);
 
@@ -44,7 +46,7 @@ public class Application {
     private static String storeData(String request) {
         CloseableHttpClient client = HttpClientBuilder.create().build();
         HttpPost post = new HttpPost(bulkIndexURL);
-        String statusResponse =  500+"";
+        String statusResponse =  "500";
         try {
             post.setEntity(new StringEntity(request));
             HttpResponse response = client.execute(post);
@@ -73,12 +75,11 @@ public class Application {
             bulkRequest.append("{ \"create\" : {\"_id\" : \""+((Map)entity).get("code")+"\" } }\n");
             bulkRequest.append(toJSON(entity)+"\n");
         }
-
         return bulkRequest.toString();
     }
 
     public static Object validateEntity(Object entity) {
-        if(((String) entity).contains("5N1AL0MM0EC524565")){
+        if(((Map) entity).get("description").toString().contains("5N1AL0MM0EC524565")){
             throw new RuntimeException("This model is not allowed");
         }
         return entity;
