@@ -1,7 +1,9 @@
 package org.vams.rxjava.app;
 
 import com.google.gson.Gson;
+import javaslang.Function2;
 import javaslang.collection.List;
+import javaslang.control.Try;
 import javaslang.control.Validation;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpPost;
@@ -9,6 +11,7 @@ import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
 import rx.Observable;
+import rx.exceptions.Exceptions;
 import rx.schedulers.Schedulers;
 
 import java.io.BufferedReader;
@@ -17,6 +20,7 @@ import java.io.FileReader;
 import java.util.*;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Created by vamsp7 on 27/03/16.
@@ -41,9 +45,10 @@ public class Application {
                 .buffer(500)
                 .flatMap(Application::toBulkRequest)
                 .flatMap(Application::storeData)
-                .subscribeOn(Schedulers.io())
-                .count()
-                .subscribe(Application::processMessage,e -> System.out.println(e.getMessage()), Application::processComplete);
+//                .subscribeOn(Schedulers.io())
+                .filter(validation -> validation.isInvalid())
+                .forEach(validation -> System.out.println(validation.getError()));
+//                .subscribe(Application::processMessage,e -> System.out.println(e.getMessage()), Application::processComplete);
 
         while (true){
             Thread.sleep(1000L);
@@ -91,45 +96,48 @@ public class Application {
     }
 
     private static Validation<String, Object> validateDescription(String description){
-        return description.contains("5N1AL0MM0EC524565")
-                ? Validation.invalid("Model 5N1AL0MM0EC524565 not allowed ")
-                : Validation.valid(description);
+        return Validation.valid(description);
+//        return description.contains("5N1AL0MM0EC524565")
+//                ? Validation.invalid("Model 5N1AL0MM0EC524565 not allowed ")
+//                : Validation.valid(description);
     }
 
     private static Validation<String, Object> validateCode(String code){
-        return code.contains("11")
-                ? Validation.invalid("Invalid model code "+code+" contains 11")
+//        return Validation.valid(code);
+        return code.contains("111")
+                ? Validation.invalid("Invalid model code "+code+" contains 111")
                 : Validation.valid(code);
     }
 
     //STORE OPERATIONS
-    public static Observable<String> toBulkRequest(Iterable<Validation<Iterable<String>, Object>> validatedEntities){
-        StringBuilder bulkRequest = new StringBuilder();
-        for (Validation validatedEntity:validatedEntities) {
-            bulkRequest.append("{ \"create\" : {\"_id\" : \""+((Map)validatedEntity).get("code")+"\" } }\n");
-            bulkRequest.append(toJSON(validatedEntity.)+"\n");
-        }
-        return Observable.just(bulkRequest.toString());
+    public static Observable<Validation<List<String>, String>> toBulkRequest(Iterable<Validation<List<String>, Object>> validatedEntities){
+        return Observable.just(
+                List.ofAll(validatedEntities)
+                .map(validatedEntity -> validatedEntity.map(entity -> List.of("{ \"create\" : {\"_id\" : \"" + ((Map) entity).get("code") + "\" } }", toJSON(entity))))
+                .reduce((ve1, ve2) -> Validation
+                        .combine(ve1, ve2)
+                        .ap((list1, list2) -> list1.appendAll(list2))
+                        .leftMap(ll -> ll.flatMap(Function.identity()))))
+                .map(v -> v.map(bulkList -> bulkList.mkString("\n")));
     }
-
 
     public static String toJSON(Object entity){
         return gson.toJson(entity);
     }
 
-    private static Observable<String> storeData(String request) {
-        CloseableHttpClient client = HttpClientBuilder.create().build();
-        HttpPost post = new HttpPost(bulkIndexURL);
+    private static Observable<Validation<List<String>,String>> storeData(Validation<List<String>,String> request) {
         return Observable.create(subscriber -> {
-            String statusResponse =  "500";
-            try {
-                post.setEntity(new StringEntity(request));
-                HttpResponse response = client.execute(post);
-                statusResponse = response.getStatusLine().getStatusCode()+"";
-            }
-            catch (Exception e) {
-                e.printStackTrace();
-            }
+            Validation<List<String>,String> statusResponse = request.map(json -> {
+                try {
+                    HttpPost post = new HttpPost(bulkIndexURL);
+                    post.setEntity(new StringEntity(json));
+                    return HttpClientBuilder.create().build().execute(post).getStatusLine().getStatusCode() + "";
+                } catch (Exception e) {
+                    Exceptions.propagate(e);
+                    return "500";
+                }
+
+            }  );
             subscriber.onNext(statusResponse);
             subscriber.onCompleted();
         });
