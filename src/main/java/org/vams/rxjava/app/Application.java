@@ -42,13 +42,14 @@ public class Application {
                 .filter(Application::validLine)
                 .flatMap(Application::toEntity)
                 .map(Application::validateEntity)
+                .filter(Validation::isValid)
+                .map(Validation::get)
                 .buffer(500)
                 .flatMap(Application::toBulkRequest)
                 .flatMap(Application::storeData)
 //                .subscribeOn(Schedulers.io())
-                .filter(validation -> validation.isInvalid())
-                .forEach(validation -> System.out.println(validation.getError()));
-//                .subscribe(Application::processMessage,e -> System.out.println(e.getMessage()), Application::processComplete);
+                .count()
+                .subscribe(Application::processMessage,e -> System.out.println(e.getMessage()), Application::processComplete);
 
         while (true){
             Thread.sleep(1000L);
@@ -91,8 +92,13 @@ public class Application {
         String code = (String)entityMap.get("code");
         String description = (String)entityMap.get("description");
 
-        return Validation.combine(validateCode(code),validateDescription(description))
+        Validation validation = Validation.combine(validateCode(code),validateDescription(description))
                 .ap((o, o2) -> entity);
+
+        if(validation.isInvalid())//TODO How to handle this side effect???
+            System.out.println("ERRORS ON "+code+": "+validation.getError());
+
+        return  validation;
     }
 
     private static Validation<String, Object> validateDescription(String description){
@@ -109,38 +115,32 @@ public class Application {
                 : Validation.valid(code);
     }
 
+
     //STORE OPERATIONS
-    public static Observable<Validation<List<String>, String>> toBulkRequest(Iterable<Validation<List<String>, Object>> validatedEntities){
+    public static Observable<String> toBulkRequest(Iterable<Object> entities){
         return Observable.just(
-                List.ofAll(validatedEntities)
-                .map(validatedEntity -> validatedEntity.map(entity -> List.of("{ \"create\" : {\"_id\" : \"" + ((Map) entity).get("code") + "\" } }", toJSON(entity))))
-                .reduce((ve1, ve2) -> Validation
-                        .combine(ve1, ve2)
-                        .ap((list1, list2) -> list1.appendAll(list2))
-                        .leftMap(ll -> ll.flatMap(Function.identity()))))
-                .map(v -> v.map(bulkList -> bulkList.mkString("\n")));
+                List.ofAll(entities)
+                        .flatMap(entity -> List.of("{ \"create\" : {\"_id\" : \"" + ((Map) entity).get("code") + "\" } }", toJSON(entity)))
+                        .mkString("\n"));
     }
 
     public static String toJSON(Object entity){
         return gson.toJson(entity);
     }
 
-    private static Observable<Validation<List<String>,String>> storeData(Validation<List<String>,String> request) {
+    private static Observable<String> storeData(String request) {
         return Observable.create(subscriber -> {
-            Validation<List<String>,String> statusResponse = request.map(json -> {
                 try {
                     HttpPost post = new HttpPost(bulkIndexURL);
-                    post.setEntity(new StringEntity(json));
-                    return HttpClientBuilder.create().build().execute(post).getStatusLine().getStatusCode() + "";
+                    post.setEntity(new StringEntity(request));
+                    String statusCode = HttpClientBuilder.create().build().execute(post).getStatusLine().getStatusCode() + "";
+                    subscriber.onNext(statusCode);
+                    subscriber.onCompleted();
                 } catch (Exception e) {
                     Exceptions.propagate(e);
-                    return "500";
                 }
 
-            }  );
-            subscriber.onNext(statusResponse);
-            subscriber.onCompleted();
-        });
+            });
     }
 
     //SUBSCRIPTION METHODS
