@@ -16,12 +16,10 @@ import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.HttpClientBuilder;
 import rx.Observable;
-import rx.schedulers.Schedulers;
+import rx.observables.ConnectableObservable;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.FileReader;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Map;
@@ -33,27 +31,24 @@ import java.util.UUID;
 public class ApplicationAsync {
 
     public static final Gson gson = new Gson();
-    public static final String bulkIndexURL = "http://192.168.99.100:9200/twitter/tweet/_bulk";
-    public static final String FILE_PATH = "/Users/vicmejia/Documents/Grooming/Nissan Inventory/Inventory Sample Data/NewCarInventory_nissan_US_es_20160308T074521.txt";
+    public static final String bulkIndexURL = "http://localhost:9200/twitter/tweet/_bulk";
+    public static final String FILE_PATH = "/home/vamsp7/Downloads/popcorn-android/Inventory Sample Data/NewCarInventory_infiniti_US_en_20160308T074521.txt";
     public static final int BUFFER_SIZE=500;
-
     public static boolean isCompleted=false;
 
     public static void main(String[] args) throws FileNotFoundException, InterruptedException {
         Calendar startTime = Calendar.getInstance();
-        Observable<String> fileReadObservable2 = ApplicationAsync.getFileLineObservable(FILE_PATH);
 
-        Observable<Tuple2<Observable<Integer>, Observable<Integer>>> mainProcess = fileReadObservable2
-                .filter(ApplicationAsync::validLine)
-                .flatMap(ApplicationAsync::toEntity)
-                .map(ApplicationAsync::validateEntity)
+        ConnectableObservable<Tuple2<Observable<Integer>, Observable<Integer>>> mainProcess = ApplicationAsync.getFileLineObservable(FILE_PATH)
+                .map(ApplicationAsync::validLine)
+                .map(validation -> validation.flatMap(ApplicationAsync::toEntity))
+                .map(validation -> validation.flatMap(ApplicationAsync::validateEntity))
                 .buffer(BUFFER_SIZE)
                 .map(ApplicationAsync::tuple)
-                .map(t -> Tuple.of(ApplicationAsync.log(t._1), ApplicationAsync.store(t._2)));
+                .map(t -> Tuple.of(ApplicationAsync.log(t._1), ApplicationAsync.store(t._2))).publish();
 
         //Store observable processing
-        mainProcess.flatMap(t -> t._2).retry(10000L)
-                .subscribeOn(Schedulers.io())
+        mainProcess.flatMap(t -> t._2)
                 .reduce((x,y) -> x+y)
                 .subscribe(totalProcessed -> System.out.println("Total processed records: "+totalProcessed),Throwable::printStackTrace, () -> isCompleted = true);
 
@@ -62,11 +57,7 @@ public class ApplicationAsync {
                 .reduce((x,y) -> x+y)
                 .subscribe(totalErrors -> System.out.println("Total records with errors: "+totalErrors));
 
-        while (true){
-            Thread.sleep(1000L);
-            if(isCompleted)
-                break;
-        }
+        mainProcess.connect();
 
         System.out.println("Total time (ms): " + (Calendar.getInstance().getTimeInMillis()-startTime.getTimeInMillis()));
     }
@@ -82,16 +73,26 @@ public class ApplicationAsync {
     }
 
     //PRE-PROCESSING OPERATIONS
-    public static boolean validLine(String line){
-        return !line.startsWith("#");
+    public static Validation<String, String> validLine(String line){
+
+        return !line.startsWith("#") ? Validation.valid(line) : Validation.invalid("Omiting comment line "+line);
     }
 
     //PARSING OPERATIONS
-    public static Observable<Object> toEntity(String line){
+    public static Validation<String, Object> toEntity(String line){
+
+        return ApplicationAsync.toValidation(Try.of(() -> ApplicationAsync.parse(line)));
+    }
+
+    public static Object parse(String line) {
+
+        if(Math.random() <= 0.01)
+            throw new RuntimeException("Error parsing line "+line+" \n Error Detail: ..Put parser specific message error...");
+
         Map<String, Object> entity = new HashMap<>();
         entity.put("code", UUID.randomUUID().toString()+Math.random()*1000);
         entity.put("description", line.replace("|"," "));
-        return Observable.just(entity);
+        return entity;
     }
 
     //ENTITY VALIDATIONS
@@ -111,10 +112,10 @@ public class ApplicationAsync {
     }
 
     private static Validation<String, Object> validateCode(String code){
-        return Validation.valid(code);
-//        return code.contains("111")
-//                ? Validation.invalid("Invalid model code "+code+" contains 111")
-//                : Validation.valid(code);
+//        return Validation.valid(code);
+        return code.contains("111")
+                ? Validation.invalid("Invalid model code "+code+" contains 111")
+                : Validation.valid(code);
     }
 
     //STORE OPERATIONS
@@ -153,7 +154,16 @@ public class ApplicationAsync {
         }
         return statusCode;
     }
+
     //UTILS
+    public static Observable<Integer> log(Iterable<String> logEntries){
+        return Observable.just(List.ofAll(logEntries).map(s -> {
+            System.out.println(s);
+            return s;
+        }).size());
+    }
+
+    //VALIDATION OPERATIONS
     public static <E,T> Tuple2<Iterable<E>, Iterable<T>> tuple(Iterable<Validation<E, T>> validations ){
         return List.ofAll(validations)
                 .groupBy(Validation::isValid)
@@ -161,10 +171,9 @@ public class ApplicationAsync {
                 .map((errorOptions, validOptions) -> Tuple.of(errorOptions.getOrElse(List.empty()),validOptions.getOrElse(List.empty())))
                 .map((errors, valids) -> Tuple.of(errors.map(Validation::getError),valids.map(Validation::get)));
     }
-    public static Observable<Integer> log(Iterable<String> logEntries){
-        return Observable.just(List.ofAll(logEntries).map(s -> {
-            System.out.println(s);
-            return s;
-        }).size());
+
+    public static <T> Validation<String,T> toValidation(Try<T> tryObject){
+        return Validation.fromEither(tryObject.toEither().mapLeft(Throwable::getMessage));
+
     }
 }
